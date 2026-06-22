@@ -2913,7 +2913,7 @@ static bool BuildSkelHierarchyImpl(
     const std::vector<int> &parentJointIds,
     const std::vector<value::token> &joints,
     const std::vector<value::token> &jointNames,
-    const std::vector<value::matrix4d> bindTransforms,
+    const std::vector<value::matrix4d> &bindTransforms,
     const std::vector<value::matrix4d> &restTransforms,
     std::string *err = nullptr) {
   // Simple linear search
@@ -3061,18 +3061,21 @@ bool BuildSkelHierarchy(const Skeleton &skel, SkelNode &dst, std::string *err) {
     root.bind_transform = bindTransforms[rootIdx];
     root.rest_transform = restTransforms[rootIdx];
 
-    // Construct hierachy from flattened id array.
+    // Construct hierarchy from flattened id array.
     if (!detail::BuildSkelHierarchyImpl(visitSet, root, parentJointIds, joints, jointNames,
                                         bindTransforms, restTransforms,
                                         err)) {
       return false;
     }
   } else {
-    // [Coquelicot local patch] Multi-root skeleton: USD permits a forest of root joints, but the
-    // rest of Tydra assumes a single root (this used to be a hard error). Synthesize a virtual root
-    // (joint_id = -1, identity transforms) that parents each real root's subtree. joint_id = -1 means
-    // the synthetic node is never referenced by per-vertex skel:jointIndices; it only joins the
-    // forest into a single tree so conversion succeeds.
+    // Multi-root skeleton: USD permits a forest of root joints, but the rest of
+    // Tydra assumes a single root (this used to be a hard error). Synthesize a
+    // virtual root (joint_id = -1, identity transforms) that parents each real
+    // root's subtree. A joint_id of -1 marks this node as purely structural: it
+    // is never referenced by per-vertex skel:jointIndices, and SkelNode
+    // consumers skip it for counting/flattening while still traversing its
+    // children (see CountNodes / FlattenSkelNode). It only joins the forest into
+    // a single tree so conversion succeeds.
     root.joint_name = "__synthetic_root__";
     root.joint_path = "__synthetic_root__";
     root.joint_id = -1;
@@ -3092,7 +3095,7 @@ bool BuildSkelHierarchy(const Skeleton &skel, SkelNode &dst, std::string *err) {
                                           bindTransforms, restTransforms, err)) {
         return false;
       }
-      root.children.push_back(child);
+      root.children.emplace_back(std::move(child));
     }
   }
 

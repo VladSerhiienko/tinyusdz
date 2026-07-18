@@ -2913,7 +2913,7 @@ static bool BuildSkelHierarchyImpl(
     const std::vector<int> &parentJointIds,
     const std::vector<value::token> &joints,
     const std::vector<value::token> &jointNames,
-    const std::vector<value::matrix4d> bindTransforms,
+    const std::vector<value::matrix4d> &bindTransforms,
     const std::vector<value::matrix4d> &restTransforms,
     std::string *err = nullptr) {
   // Simple linear search
@@ -3042,36 +3042,61 @@ bool BuildSkelHierarchy(const Skeleton &skel, SkelNode &dst, std::string *err) {
         "Invalid Skel topology. No root joint found: {}", skel.name));
   }
 
-  if (nroots != 1) {
-    PUSH_ERROR_AND_RETURN(
-        fmt::format("Invalid Skel topology. Topology must be single-rooted, "
-                    "but it has {} roots: {}",
-                    nroots, skel.name));
-  }
-
   std::set<size_t> visitSet;
 
   SkelNode root;
 
-  auto it = std::find(parentJointIds.begin(), parentJointIds.end(), -1);
-  if (it == parentJointIds.end()) {
-    PUSH_ERROR_AND_RETURN("Internal error.");
-  }
-  size_t rootIdx = size_t(std::distance(parentJointIds.begin(), it));
-
-  root.joint_name = jointNames[rootIdx].str();
-  root.joint_path = joints[rootIdx].str();
-  root.joint_id = int(rootIdx);
-  root.bind_transform = bindTransforms[rootIdx];
-  root.rest_transform = restTransforms[rootIdx];
-
   DCOUT("parentJointIds = " << parentJointIds);
- 
-  // Construct hierachy from flattened id array.
-  if (!detail::BuildSkelHierarchyImpl(visitSet, root, parentJointIds, joints, jointNames,
-                                      bindTransforms, restTransforms,
-                                      err)) {
-    return false;
+
+  if (nroots == 1) {
+    auto it = std::find(parentJointIds.begin(), parentJointIds.end(), -1);
+    if (it == parentJointIds.end()) {
+      PUSH_ERROR_AND_RETURN("Internal error.");
+    }
+    size_t rootIdx = size_t(std::distance(parentJointIds.begin(), it));
+
+    root.joint_name = jointNames[rootIdx].str();
+    root.joint_path = joints[rootIdx].str();
+    root.joint_id = int(rootIdx);
+    root.bind_transform = bindTransforms[rootIdx];
+    root.rest_transform = restTransforms[rootIdx];
+
+    // Construct hierarchy from flattened id array.
+    if (!detail::BuildSkelHierarchyImpl(visitSet, root, parentJointIds, joints, jointNames,
+                                        bindTransforms, restTransforms,
+                                        err)) {
+      return false;
+    }
+  } else {
+    // Multi-root skeleton: USD permits a forest of root joints, but the rest of
+    // Tydra assumes a single root (this used to be a hard error). Synthesize a
+    // virtual root (joint_id = -1, identity transforms) that parents each real
+    // root's subtree. A joint_id of -1 marks this node as purely structural: it
+    // is never referenced by per-vertex skel:jointIndices, and SkelNode
+    // consumers skip it for counting/flattening while still traversing its
+    // children (see CountNodes / FlattenSkelNode). It only joins the forest into
+    // a single tree so conversion succeeds.
+    root.joint_name = "__synthetic_root__";
+    root.joint_path = "__synthetic_root__";
+    root.joint_id = -1;
+    root.bind_transform = value::matrix4d::identity();
+    root.rest_transform = value::matrix4d::identity();
+    for (size_t i = 0; i < parentJointIds.size(); i++) {
+      if (parentJointIds[i] != -1) {
+        continue;
+      }
+      SkelNode child;
+      child.joint_name = jointNames[i].str();
+      child.joint_path = joints[i].str();
+      child.joint_id = int(i);
+      child.bind_transform = bindTransforms[i];
+      child.rest_transform = restTransforms[i];
+      if (!detail::BuildSkelHierarchyImpl(visitSet, child, parentJointIds, joints, jointNames,
+                                          bindTransforms, restTransforms, err)) {
+        return false;
+      }
+      root.children.emplace_back(std::move(child));
+    }
   }
 
   dst = root;

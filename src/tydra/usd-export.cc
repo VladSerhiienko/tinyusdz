@@ -22,7 +22,11 @@ namespace tydra {
 namespace detail {
 
 static void CountNodes(const SkelNode &node, size_t &count) {
-  count++;
+  // Structural nodes (joint_id < 0, e.g. a synthesized parent for a multi-root
+  // skeleton) own no joint slot and must not inflate the joint count.
+  if (node.joint_id >= 0) {
+    count++;
+  }
 
   for (const auto &child : node.children) {
     CountNodes(child, count);
@@ -35,18 +39,23 @@ static bool FlattenSkelNode(const SkelNode &node,
   std::vector<value::matrix4d> &bindTransforms,
   std::vector<value::matrix4d> &restTransforms, std::string *err) {
 
-  size_t idx = size_t(node.joint_id);
-  if (idx >= joints.size()) {
-    if (err) {
-      (*err) += "joint_id out-of-bounds.";
+  // A node with joint_id < 0 is purely structural (e.g. the synthetic root used
+  // for multi-root skeletons); it owns no joint slot, so skip writing it but
+  // still traverse its children below.
+  if (node.joint_id >= 0) {
+    size_t idx = size_t(node.joint_id);
+    if (idx >= joints.size()) {
+      if (err) {
+        (*err) += "joint_id out-of-bounds.";
+      }
+      return false;
     }
-    return false;
-  }
 
-  joints[idx] = value::token(node.joint_path);
-  jointNames[idx] = value::token(node.joint_name);
-  bindTransforms[idx] = node.bind_transform;
-  restTransforms[idx] = node.rest_transform;
+    joints[idx] = value::token(node.joint_path);
+    jointNames[idx] = value::token(node.joint_name);
+    bindTransforms[idx] = node.bind_transform;
+    restTransforms[idx] = node.rest_transform;
+  }
 
   for (const auto &child : node.children) {
     if (!FlattenSkelNode(child, joints, jointNames, bindTransforms, restTransforms, err)) {
